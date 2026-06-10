@@ -20,7 +20,12 @@ def dict_to_tuple(d):
 
 @cached(cache, key=lambda params: dict_to_tuple(params))
 def fetch_from_datagov(params):
-    params.update({"api-key": DATA_GOV_KEY, "format": "json", "limit": 5000})
+    safe_params = dict(params)
+    safe_params.update({
+        "api-key": DATA_GOV_KEY,
+        "format": "json",
+        "limit": 5000
+    })
     resp = requests.get(BASE_URL, params=params, timeout=20)
     resp.raise_for_status()
     return resp.json()
@@ -50,7 +55,7 @@ def prices():
 
     arrival_date = request.args.get("arrival_date")
     if arrival_date:
-        params["filters[Arrival_Date]"] = arrival_date
+        params["filters[Arrival Date]"] = arrival_date
 
     try:
         data = fetch_from_datagov(params)
@@ -65,9 +70,9 @@ def prices():
                 "commodity": r.get("Commodity"),
                 "variety": r.get("Variety"),
                 "arrival_date": r.get("Arrival_Date"),
-                "min_price": r.get("Min_Price"),
-                "max_price": r.get("Max_Price"),
-                "modal_price": r.get("Modal_Price"),
+                "min_price": r.get("Min X0020 Price"),
+                "max_price": r.get("Max X0020 Price"),
+                "modal_price": r.get("Modal X0020 Price"),
             })
 
         if not normalized:
