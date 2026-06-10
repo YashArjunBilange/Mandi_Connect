@@ -15,8 +15,6 @@ CORS(app)
 # CONFIG
 # ─────────────────────────────────────────────
 API_KEY = os.environ.get("API_KEY")
-API_KEY_PARAM = os.environ.get("API_KEY_PARAM", "api-key")
-API_KEY_HEADER = os.environ.get("API_KEY_HEADER")
 
 RESOURCE_ID = os.environ.get(
     "API_RESOURCE_ID",
@@ -28,7 +26,7 @@ API_BASE_URL = os.environ.get(
     f"https://api.data.gov.in/resource/{RESOURCE_ID}"
 )
 
-API_DEFAULT_LIMIT = os.environ.get("API_DEFAULT_LIMIT", "5000")
+API_DEFAULT_LIMIT = os.environ.get("API_DEFAULT_LIMIT", "100")
 
 # ─────────────────────────────────────────────
 # CACHE
@@ -39,27 +37,25 @@ def cache_key(params):
     return tuple(sorted(params.items())) if isinstance(params, dict) else str(params)
 
 # ─────────────────────────────────────────────
-# SAFE API CALL
+# SAFE API CALL (SIMPLIFIED)
 # ─────────────────────────────────────────────
 @cached(cache, key=cache_key)
 def fetch_from_api(params):
-    if not API_BASE_URL:
-        return {"error": "API_BASE_URL not configured"}
-
-    query = params.copy() if params else {}
-    headers = {}
-
-    if API_KEY:
-        if API_KEY_HEADER:
-            headers[API_KEY_HEADER] = API_KEY
-        else:
-            query.setdefault(API_KEY_PARAM, API_KEY)
-
-    query.setdefault("format", "json")
-    query.setdefault("limit", API_DEFAULT_LIMIT)
-
     try:
-        resp = requests.get(API_BASE_URL, params=query, headers=headers, timeout=20)
+        query = params.copy() if params else {}
+
+        # ✅ ALWAYS send API key as query param
+        if API_KEY:
+            query["api-key"] = API_KEY
+
+        query.setdefault("format", "json")
+        query.setdefault("limit", API_DEFAULT_LIMIT)
+
+        resp = requests.get(
+            API_BASE_URL,
+            params=query,
+            timeout=(5, 15)
+        )
 
         if resp.status_code != 200:
             return {
@@ -80,33 +76,29 @@ def fetch_from_api(params):
         return {"error": "API timeout"}
 
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()
+        }
 
 # ─────────────────────────────────────────────
-# ROOT (FIXED - NO TEMPLATE)
+# ROOT
 # ─────────────────────────────────────────────
 @app.route("/")
 def home():
     return jsonify({
         "status": "running",
         "message": "🌾 Farmer Market API is live",
-        "version": "1.0",
-        "endpoints": [
-            "/prices",
-            "/options",
-            "/schema",
-            "/health"
-        ]
+        "endpoints": ["/prices", "/options", "/schema", "/health"]
     })
 
 # ─────────────────────────────────────────────
-# HEALTH CHECK
+# HEALTH
 # ─────────────────────────────────────────────
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "api_base_url": API_BASE_URL,
         "api_key_loaded": bool(API_KEY),
         "resource_id": RESOURCE_ID
     })
@@ -116,68 +108,54 @@ def health():
 # ─────────────────────────────────────────────
 @app.route("/schema")
 def schema():
-    try:
-        data = fetch_from_api({"limit": 1})
+    data = fetch_from_api({"limit": 1})
 
-        if isinstance(data, dict) and data.get("error"):
-            return jsonify(data), 500
+    if isinstance(data, dict) and data.get("error"):
+        return jsonify(data), 500
 
-        records = data.get("records", [])
+    records = data.get("records", [])
 
-        if not records:
-            return jsonify({"error": "No data found"}), 404
+    if not records:
+        return jsonify({"error": "No data found"}), 404
 
-        return jsonify({
-            "fields": list(records[0].keys()),
-            "example": records[0]
-        })
-
-    except Exception:
-        return jsonify({
-            "error": "schema route crashed",
-            "trace": traceback.format_exc()
-        }), 500
+    return jsonify({
+        "fields": list(records[0].keys()),
+        "example": records[0]
+    })
 
 # ─────────────────────────────────────────────
-# OPTIONS (DISTRICTS / MARKETS / COMMODITIES)
+# OPTIONS
 # ─────────────────────────────────────────────
 @app.route("/options")
 def options():
-    try:
-        data = fetch_from_api({"limit": 500})
+    data = fetch_from_api({"limit": 100})
 
-        if isinstance(data, dict) and data.get("error"):
-            return jsonify(data), 500
+    if isinstance(data, dict) and data.get("error"):
+        return jsonify(data), 500
 
-        records = data.get("records", [])
+    records = data.get("records", [])
 
-        districts, markets, commodities = set(), set(), set()
+    districts, markets, commodities = set(), set(), set()
 
-        for r in records:
-            if not isinstance(r, dict):
-                continue
+    for r in records:
+        if not isinstance(r, dict):
+            continue
 
-            if r.get("District"):
-                districts.add(r["District"])
-            if r.get("Market"):
-                markets.add(r["Market"])
-            if r.get("Commodity"):
-                commodities.add(r["Commodity"])
+        if r.get("District"):
+            districts.add(r["District"])
+        if r.get("Market"):
+            markets.add(r["Market"])
+        if r.get("Commodity"):
+            commodities.add(r["Commodity"])
 
-        return jsonify({
-            "districts": sorted(d for d in districts if d),
-            "markets": sorted(m for m in markets if m),
-            "commodities": sorted(c for c in commodities if c),
-        })
-
-    except Exception:
-        return jsonify({
-            "error": "options route crashed",
-            "trace": traceback.format_exc()
-        }), 500
+    return jsonify({
+        "districts": sorted(d for d in districts if d),
+        "markets": sorted(m for m in markets if m),
+        "commodities": sorted(c for c in commodities if c),
+    })
 
 # ─────────────────────────────────────────────
-# PRICES API
+# PRICES
 # ─────────────────────────────────────────────
 @app.route("/prices")
 def prices():
@@ -195,9 +173,6 @@ def prices():
 
         if request.args.get("market"):
             params["filters[Market]"] = request.args.get("market")
-
-        if request.args.get("arrival_date"):
-            params["filters[Arrival Date]"] = request.args.get("arrival_date")
 
         data = fetch_from_api(params)
 
