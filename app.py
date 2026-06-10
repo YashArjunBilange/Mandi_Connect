@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from cachetools import TTLCache, cached
 import requests
 from flask_cors import CORS
@@ -8,7 +8,7 @@ import traceback
 
 load_dotenv()
 
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__)
 CORS(app)
 
 # ─────────────────────────────────────────────
@@ -83,44 +83,36 @@ def fetch_from_api(params):
         return {"error": str(e)}
 
 # ─────────────────────────────────────────────
-# FRONTEND ROUTES
+# ROOT (FIXED - NO TEMPLATE)
 # ─────────────────────────────────────────────
 @app.route("/")
 def home():
-    return render_template("home.html", page_name="home")
-
-@app.route("/get-prices")
-def get_prices():
-    return render_template("get_prices.html", page_name="get-prices")
-
-@app.route("/historical-trends")
-def trends():
-    return render_template("trends.html", page_name="trends")
-
-@app.route("/notifications")
-def notifications():
-    return render_template("notifications.html", page_name="notifications")
-
-# ─────────────────────────────────────────────
-# API STATUS
-# ─────────────────────────────────────────────
-@app.route("/api")
-def api_info():
     return jsonify({
-        "message": "✅ Farmer Market API is live",
-        "usage": "/prices?state=Maharashtra&commodity=Onion"
+        "status": "running",
+        "message": "🌾 Farmer Market API is live",
+        "version": "1.0",
+        "endpoints": [
+            "/prices",
+            "/options",
+            "/schema",
+            "/health"
+        ]
     })
 
+# ─────────────────────────────────────────────
+# HEALTH CHECK
+# ─────────────────────────────────────────────
 @app.route("/health")
 def health():
     return jsonify({
+        "status": "ok",
         "api_base_url": API_BASE_URL,
         "api_key_loaded": bool(API_KEY),
-        "status": "ok"
+        "resource_id": RESOURCE_ID
     })
 
 # ─────────────────────────────────────────────
-# SCHEMA DEBUG
+# SCHEMA
 # ─────────────────────────────────────────────
 @app.route("/schema")
 def schema():
@@ -133,7 +125,7 @@ def schema():
         records = data.get("records", [])
 
         if not records:
-            return jsonify({"error": "No records found"}), 404
+            return jsonify({"error": "No data found"}), 404
 
         return jsonify({
             "fields": list(records[0].keys()),
@@ -142,12 +134,12 @@ def schema():
 
     except Exception:
         return jsonify({
-            "error": "Schema route crashed",
+            "error": "schema route crashed",
             "trace": traceback.format_exc()
         }), 500
 
 # ─────────────────────────────────────────────
-# OPTIONS (FIXED + SAFE)
+# OPTIONS (DISTRICTS / MARKETS / COMMODITIES)
 # ─────────────────────────────────────────────
 @app.route("/options")
 def options():
@@ -155,18 +147,9 @@ def options():
         data = fetch_from_api({"limit": 500})
 
         if isinstance(data, dict) and data.get("error"):
-            return jsonify({
-                "error": "API failed in /options",
-                "details": data
-            }), 500
+            return jsonify(data), 500
 
-        records = data.get("records")
-
-        if not isinstance(records, list):
-            return jsonify({
-                "error": "Invalid API format",
-                "type": str(type(records))
-            }), 500
+        records = data.get("records", [])
 
         districts, markets, commodities = set(), set(), set()
 
@@ -189,12 +172,12 @@ def options():
 
     except Exception:
         return jsonify({
-            "error": "Options route crashed",
+            "error": "options route crashed",
             "trace": traceback.format_exc()
         }), 500
 
 # ─────────────────────────────────────────────
-# PRICES API (FULL SAFE VERSION)
+# PRICES API
 # ─────────────────────────────────────────────
 @app.route("/prices")
 def prices():
@@ -236,8 +219,6 @@ def prices():
                 "commodity": r.get("Commodity"),
                 "variety": r.get("Variety"),
                 "grade": r.get("Grade"),
-
-                # dataset exact keys
                 "arrival_date": r.get("Arrival Date"),
                 "min_price": r.get("Min X0020 Price"),
                 "max_price": r.get("Max X0020 Price"),
@@ -251,12 +232,12 @@ def prices():
 
     except Exception:
         return jsonify({
-            "error": "Prices route crashed",
+            "error": "prices route crashed",
             "trace": traceback.format_exc()
         }), 500
 
 # ─────────────────────────────────────────────
-# RUN APP
+# RUN
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
