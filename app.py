@@ -24,9 +24,9 @@ def fetch_from_datagov(params):
     safe_params.update({
         "api-key": DATA_GOV_KEY,
         "format": "json",
-        "limit": 5000
+        "limit": 500
     })
-    resp = requests.get(BASE_URL, params=safe_params, timeout=20)
+    resp = requests.get(BASE_URL, params=safe_params, timeout=60)
     resp.raise_for_status()
     return resp.json()
 
@@ -55,7 +55,7 @@ def prices():
 
     arrival_date = request.args.get("arrival_date")
     if arrival_date:
-        params["filters[Arrival Date]"] = arrival_date
+        params["filters[Arrival_Date]"] = arrival_date
 
     try:
         data = fetch_from_datagov(params)
