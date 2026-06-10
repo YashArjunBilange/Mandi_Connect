@@ -11,7 +11,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
 
 # ─────────────────────────────────────────────
-# ENV CONFIG
+# CONFIG
 # ─────────────────────────────────────────────
 API_KEY = os.environ.get("API_KEY")
 API_KEY_PARAM = os.environ.get("API_KEY_PARAM", "api-key")
@@ -30,22 +30,22 @@ API_BASE_URL = os.environ.get(
 API_DEFAULT_LIMIT = os.environ.get("API_DEFAULT_LIMIT", "5000")
 
 # ─────────────────────────────────────────────
-# CACHE (15 min)
+# CACHE
 # ─────────────────────────────────────────────
 cache = TTLCache(maxsize=200, ttl=60 * 15)
 
-def dict_to_tuple(d):
-    return tuple(sorted(d.items()))
+def cache_key(params):
+    return tuple(sorted(params.items())) if isinstance(params, dict) else str(params)
 
 # ─────────────────────────────────────────────
-# CORE API CALL
+# SAFE API FETCH (NO MORE 500 CRASHES)
 # ─────────────────────────────────────────────
-@cached(cache, key=lambda params: dict_to_tuple(params))
+@cached(cache, key=cache_key)
 def fetch_from_api(params):
     if not API_BASE_URL:
-        raise ValueError("API_BASE_URL is not configured.")
+        return {"error": "API_BASE_URL not configured"}
 
-    query = params.copy()
+    query = params.copy() if params else {}
     headers = {}
 
     # API key handling
@@ -58,14 +58,35 @@ def fetch_from_api(params):
     query.setdefault("format", "json")
     query.setdefault("limit", API_DEFAULT_LIMIT)
 
-    resp = requests.get(
-        API_BASE_URL,
-        params=query,
-        headers=headers,
-        timeout=20
-    )
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.get(
+            API_BASE_URL,
+            params=query,
+            headers=headers,
+            timeout=20
+        )
+
+        # ❗ prevent silent crashes
+        if resp.status_code != 200:
+            return {
+                "error": "API request failed",
+                "status_code": resp.status_code,
+                "response": resp.text[:300]
+            }
+
+        try:
+            return resp.json()
+        except Exception:
+            return {
+                "error": "Invalid JSON from API",
+                "response": resp.text[:300]
+            }
+
+    except requests.exceptions.Timeout:
+        return {"error": "API timeout"}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 # ─────────────────────────────────────────────
 # FRONTEND ROUTES
@@ -92,7 +113,7 @@ def notifications():
 @app.route("/api")
 def api_info():
     return jsonify({
-        "message": "✅ Farmer Market API is live.",
+        "message": "✅ Farmer Market API is live",
         "usage": "/prices?state=Maharashtra&commodity=Onion"
     })
 
@@ -102,77 +123,61 @@ def health():
         "api_base_url": API_BASE_URL,
         "api_key_loaded": bool(API_KEY),
         "api_key_mode": "header" if API_KEY_HEADER else "query",
-        "api_key_param": None if API_KEY_HEADER else API_KEY_PARAM,
         "resource_id": RESOURCE_ID,
-        "default_limit": API_DEFAULT_LIMIT,
         "status": "ok"
     })
 
 # ─────────────────────────────────────────────
-# SCHEMA INSPECTION (VERY IMPORTANT FOR DEBUGGING)
+# SCHEMA DEBUG (VERY IMPORTANT)
 # ─────────────────────────────────────────────
 @app.route("/schema")
 def schema():
-    try:
-        data = fetch_from_api({"limit": 1})
-        records = data.get("records", [])
+    data = fetch_from_api({"limit": 1})
 
-        if not records:
-            return jsonify({"error": "No dataset records found."}), 404
+    if isinstance(data, dict) and data.get("error"):
+        return jsonify(data), 500
 
-        example = records[0]
+    records = data.get("records", [])
+    if not records:
+        return jsonify({"error": "No records found"}), 404
 
-        return jsonify({
-            "resource_id": RESOURCE_ID,
-            "field_count": len(example),
-            "fields": list(example.keys()),
-            "example_record": example,
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "fields": list(records[0].keys()),
+        "example": records[0]
+    })
 
 # ─────────────────────────────────────────────
-# FILTER OPTIONS (SAFE EXTRACTION)
+# OPTIONS (SAFE EXTRACTION)
 # ─────────────────────────────────────────────
 @app.route("/options")
 def options():
-    try:
-        data = fetch_from_api({"limit": 500})
-        records = data.get("records", [])
+    data = fetch_from_api({"limit": 500})
 
-        districts, markets, commodities = set(), set(), set()
+    if isinstance(data, dict) and data.get("error"):
+        return jsonify(data), 500
 
-        for r in records:
-            if r.get("District"):
-                districts.add(r.get("District"))
-            if r.get("Market"):
-                markets.add(r.get("Market"))
-            if r.get("Commodity"):
-                commodities.add(r.get("Commodity"))
+    records = data.get("records", [])
 
-        return jsonify({
-            "districts": sorted(districts),
-            "markets": sorted(markets),
-            "commodities": sorted(commodities),
-        })
+    districts, markets, commodities = set(), set(), set()
 
-    except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "districts": [],
-            "markets": [],
-            "commodities": [],
-        }), 500
+    for r in records:
+        districts.add(r.get("District"))
+        markets.add(r.get("Market"))
+        commodities.add(r.get("Commodity"))
+
+    return jsonify({
+        "districts": sorted(d for d in districts if d),
+        "markets": sorted(m for m in markets if m),
+        "commodities": sorted(c for c in commodities if c),
+    })
 
 # ─────────────────────────────────────────────
-# PRICE API (FIXED FIELD MAPPING)
+# PRICE API (FIXED + ROBUST MAPPING)
 # ─────────────────────────────────────────────
 @app.route("/prices")
 def prices():
     params = {}
 
-    # Filters (must match API field names exactly)
     if request.args.get("state"):
         params["filters[State]"] = request.args.get("state")
 
@@ -188,38 +193,35 @@ def prices():
     if request.args.get("arrival_date"):
         params["filters[Arrival Date]"] = request.args.get("arrival_date")
 
-    try:
-        data = fetch_from_api(params)
-        records = data.get("records", [])
+    data = fetch_from_api(params)
 
-        normalized = []
+    if isinstance(data, dict) and data.get("error"):
+        return jsonify(data), 500
 
-        for r in records:
-            normalized.append({
-                "state": r.get("State"),
-                "district": r.get("District"),
-                "market": r.get("Market"),
-                "commodity": r.get("Commodity"),
-                "variety": r.get("Variety"),
-                "grade": r.get("Grade"),
+    records = data.get("records", [])
 
-                # ⚠️ FIXED FIELD MAPPING (IMPORTANT)
-                "arrival_date": r.get("Arrival Date"),
-                "min_price": r.get("Min X0020 Price"),
-                "max_price": r.get("Max X0020 Price"),
-                "modal_price": r.get("Modal X0020 Price"),
-            })
+    normalized = []
 
-        if not normalized:
-            return jsonify({
-                "message": "No records found for these filters.",
-                "records": []
-            })
+    for r in records:
+        normalized.append({
+            "state": r.get("State"),
+            "district": r.get("District"),
+            "market": r.get("Market"),
+            "commodity": r.get("Commodity"),
+            "variety": r.get("Variety"),
+            "grade": r.get("Grade"),
 
-        return jsonify({"records": normalized})
+            # 🔥 FIXED FIELD NAMES (CRITICAL)
+            "arrival_date": r.get("Arrival Date"),
+            "min_price": r.get("Min X0020 Price"),
+            "max_price": r.get("Max X0020 Price"),
+            "modal_price": r.get("Modal X0020 Price"),
+        })
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "count": len(normalized),
+        "records": normalized
+    })
 
 # ─────────────────────────────────────────────
 # RUN APP
