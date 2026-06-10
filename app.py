@@ -4,6 +4,7 @@ import requests
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+import traceback
 
 load_dotenv()
 
@@ -38,7 +39,7 @@ def cache_key(params):
     return tuple(sorted(params.items())) if isinstance(params, dict) else str(params)
 
 # ─────────────────────────────────────────────
-# SAFE API FETCH (NO MORE 500 CRASHES)
+# SAFE API CALL
 # ─────────────────────────────────────────────
 @cached(cache, key=cache_key)
 def fetch_from_api(params):
@@ -48,7 +49,6 @@ def fetch_from_api(params):
     query = params.copy() if params else {}
     headers = {}
 
-    # API key handling
     if API_KEY:
         if API_KEY_HEADER:
             headers[API_KEY_HEADER] = API_KEY
@@ -59,14 +59,8 @@ def fetch_from_api(params):
     query.setdefault("limit", API_DEFAULT_LIMIT)
 
     try:
-        resp = requests.get(
-            API_BASE_URL,
-            params=query,
-            headers=headers,
-            timeout=20
-        )
+        resp = requests.get(API_BASE_URL, params=query, headers=headers, timeout=20)
 
-        # ❗ prevent silent crashes
         if resp.status_code != 200:
             return {
                 "error": "API request failed",
@@ -78,7 +72,7 @@ def fetch_from_api(params):
             return resp.json()
         except Exception:
             return {
-                "error": "Invalid JSON from API",
+                "error": "Invalid JSON response",
                 "response": resp.text[:300]
             }
 
@@ -122,106 +116,144 @@ def health():
     return jsonify({
         "api_base_url": API_BASE_URL,
         "api_key_loaded": bool(API_KEY),
-        "api_key_mode": "header" if API_KEY_HEADER else "query",
-        "resource_id": RESOURCE_ID,
         "status": "ok"
     })
 
 # ─────────────────────────────────────────────
-# SCHEMA DEBUG (VERY IMPORTANT)
+# SCHEMA DEBUG
 # ─────────────────────────────────────────────
 @app.route("/schema")
 def schema():
-    data = fetch_from_api({"limit": 1})
+    try:
+        data = fetch_from_api({"limit": 1})
 
-    if isinstance(data, dict) and data.get("error"):
-        return jsonify(data), 500
+        if isinstance(data, dict) and data.get("error"):
+            return jsonify(data), 500
 
-    records = data.get("records", [])
-    if not records:
-        return jsonify({"error": "No records found"}), 404
+        records = data.get("records", [])
 
-    return jsonify({
-        "fields": list(records[0].keys()),
-        "example": records[0]
-    })
+        if not records:
+            return jsonify({"error": "No records found"}), 404
+
+        return jsonify({
+            "fields": list(records[0].keys()),
+            "example": records[0]
+        })
+
+    except Exception:
+        return jsonify({
+            "error": "Schema route crashed",
+            "trace": traceback.format_exc()
+        }), 500
 
 # ─────────────────────────────────────────────
-# OPTIONS (SAFE EXTRACTION)
+# OPTIONS (FIXED + SAFE)
 # ─────────────────────────────────────────────
 @app.route("/options")
 def options():
-    data = fetch_from_api({"limit": 500})
+    try:
+        data = fetch_from_api({"limit": 500})
 
-    if isinstance(data, dict) and data.get("error"):
-        return jsonify(data), 500
+        if isinstance(data, dict) and data.get("error"):
+            return jsonify({
+                "error": "API failed in /options",
+                "details": data
+            }), 500
 
-    records = data.get("records", [])
+        records = data.get("records")
 
-    districts, markets, commodities = set(), set(), set()
+        if not isinstance(records, list):
+            return jsonify({
+                "error": "Invalid API format",
+                "type": str(type(records))
+            }), 500
 
-    for r in records:
-        districts.add(r.get("District"))
-        markets.add(r.get("Market"))
-        commodities.add(r.get("Commodity"))
+        districts, markets, commodities = set(), set(), set()
 
-    return jsonify({
-        "districts": sorted(d for d in districts if d),
-        "markets": sorted(m for m in markets if m),
-        "commodities": sorted(c for c in commodities if c),
-    })
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+
+            if r.get("District"):
+                districts.add(r["District"])
+            if r.get("Market"):
+                markets.add(r["Market"])
+            if r.get("Commodity"):
+                commodities.add(r["Commodity"])
+
+        return jsonify({
+            "districts": sorted(d for d in districts if d),
+            "markets": sorted(m for m in markets if m),
+            "commodities": sorted(c for c in commodities if c),
+        })
+
+    except Exception:
+        return jsonify({
+            "error": "Options route crashed",
+            "trace": traceback.format_exc()
+        }), 500
 
 # ─────────────────────────────────────────────
-# PRICE API (FIXED + ROBUST MAPPING)
+# PRICES API (FULL SAFE VERSION)
 # ─────────────────────────────────────────────
 @app.route("/prices")
 def prices():
-    params = {}
+    try:
+        params = {}
 
-    if request.args.get("state"):
-        params["filters[State]"] = request.args.get("state")
+        if request.args.get("state"):
+            params["filters[State]"] = request.args.get("state")
 
-    if request.args.get("commodity"):
-        params["filters[Commodity]"] = request.args.get("commodity")
+        if request.args.get("commodity"):
+            params["filters[Commodity]"] = request.args.get("commodity")
 
-    if request.args.get("district"):
-        params["filters[District]"] = request.args.get("district")
+        if request.args.get("district"):
+            params["filters[District]"] = request.args.get("district")
 
-    if request.args.get("market"):
-        params["filters[Market]"] = request.args.get("market")
+        if request.args.get("market"):
+            params["filters[Market]"] = request.args.get("market")
 
-    if request.args.get("arrival_date"):
-        params["filters[Arrival Date]"] = request.args.get("arrival_date")
+        if request.args.get("arrival_date"):
+            params["filters[Arrival Date]"] = request.args.get("arrival_date")
 
-    data = fetch_from_api(params)
+        data = fetch_from_api(params)
 
-    if isinstance(data, dict) and data.get("error"):
-        return jsonify(data), 500
+        if isinstance(data, dict) and data.get("error"):
+            return jsonify(data), 500
 
-    records = data.get("records", [])
+        records = data.get("records", [])
 
-    normalized = []
+        result = []
 
-    for r in records:
-        normalized.append({
-            "state": r.get("State"),
-            "district": r.get("District"),
-            "market": r.get("Market"),
-            "commodity": r.get("Commodity"),
-            "variety": r.get("Variety"),
-            "grade": r.get("Grade"),
+        for r in records:
+            if not isinstance(r, dict):
+                continue
 
-            # 🔥 FIXED FIELD NAMES (CRITICAL)
-            "arrival_date": r.get("Arrival Date"),
-            "min_price": r.get("Min X0020 Price"),
-            "max_price": r.get("Max X0020 Price"),
-            "modal_price": r.get("Modal X0020 Price"),
+            result.append({
+                "state": r.get("State"),
+                "district": r.get("District"),
+                "market": r.get("Market"),
+                "commodity": r.get("Commodity"),
+                "variety": r.get("Variety"),
+                "grade": r.get("Grade"),
+
+                # dataset exact keys
+                "arrival_date": r.get("Arrival Date"),
+                "min_price": r.get("Min X0020 Price"),
+                "max_price": r.get("Max X0020 Price"),
+                "modal_price": r.get("Modal X0020 Price"),
+            })
+
+        return jsonify({
+            "count": len(result),
+            "records": result
         })
 
-    return jsonify({
-        "count": len(normalized),
-        "records": normalized
-    })
+    except Exception:
+        return jsonify({
+            "error": "Prices route crashed",
+            "trace": traceback.format_exc()
+        }), 500
 
 # ─────────────────────────────────────────────
 # RUN APP
