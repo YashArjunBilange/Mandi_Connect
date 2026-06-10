@@ -14,7 +14,7 @@ CORS(app)
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-API_KEY = os.environ.get("API_KEY")
+API_KEY=os.environ.get("API_KEY")
 
 RESOURCE_ID = os.environ.get(
     "API_RESOURCE_ID",
@@ -46,7 +46,7 @@ def fetch_from_api(params):
 
         # ✅ ALWAYS send API key as query param
         if API_KEY:
-            query["api-key"] = API_KEY
+            query["api-key"] =API_KEY
 
         query.setdefault("format", "json")
         query.setdefault("limit", API_DEFAULT_LIMIT)
