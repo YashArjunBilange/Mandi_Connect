@@ -26,7 +26,7 @@ def fetch_from_datagov(params):
         "format": "json",
         "limit": 5000
     })
-    resp = requests.get(BASE_URL, params=params, timeout=20)
+    resp = requests.get(BASE_URL, params=safe_params, timeout=20)
     resp.raise_for_status()
     return resp.json()
 
