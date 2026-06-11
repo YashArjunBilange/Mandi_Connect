@@ -155,26 +155,33 @@ def options():
     })
 @app.route("/debug-api")
 def debug_api():
-    headers = {}
-
-    if API_KEY:
-        headers["Authorization"] = API_KEY
-
     try:
-        r = requests.get(
+        headers = {
+            "Authorization": API_KEY
+        }
+
+        response = requests.get(
             API_BASE_URL,
-            params={"format": "json", "limit": 1},
+            params={
+                "format": "json",
+                "limit": 1
+            },
             headers=headers,
             timeout=20
         )
 
         return jsonify({
-            "status_code": r.status_code,
-            "response": r.text[:1000]
+            "status_code": response.status_code,
+            "text": response.text[:1000]
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 # ─────────────────────────────────────────────
 # PRICES
 # ─────────────────────────────────────────────
