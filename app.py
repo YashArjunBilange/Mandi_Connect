@@ -1,100 +1,83 @@
 from flask import Flask, request, jsonify
-from cachetools import TTLCache, cached
-import requests
 from flask_cors import CORS
+from cachetools import TTLCache, cached
 from dotenv import load_dotenv
+import requests
 import os
-import traceback
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# ─────────────────────────────────────────────
+# =========================
 # CONFIG
-# ─────────────────────────────────────────────
-API_KEY=os.environ.get("API_KEY")
+# =========================
 
-RESOURCE_ID = os.environ.get(
-    "API_RESOURCE_ID",
-    "9ef84268-d588-465a-a308-a864a43d0070"
-)
+API_KEY = os.getenv("API_KEY")
 
-API_BASE_URL = os.environ.get(
-    "API_BASE_URL",
+RESOURCE_ID = "9ef84268-d588-465a-a308-a864a43d0070"
+
+API_BASE_URL = (
     f"https://api.data.gov.in/resource/{RESOURCE_ID}"
 )
 
-API_DEFAULT_LIMIT = os.environ.get("API_DEFAULT_LIMIT", "100")
+DEFAULT_LIMIT = 100
 
-# ─────────────────────────────────────────────
+# =========================
 # CACHE
-# ─────────────────────────────────────────────
-cache = TTLCache(maxsize=200, ttl=60 * 15)
+# =========================
 
-def cache_key(params):
-    return tuple(sorted(params.items())) if isinstance(params, dict) else str(params)
+cache = TTLCache(maxsize=200, ttl=900)
 
-# ─────────────────────────────────────────────
-# SAFE API CALL (SIMPLIFIED)
-# ─────────────────────────────────────────────
-@cached(cache, key=cache_key)
+
+def make_cache_key(params):
+    return tuple(sorted(params.items()))
+
+
+@cached(cache, key=lambda params: make_cache_key(params))
 def fetch_from_api(params):
-    try:
-        query = params.copy() if params else {}
+    query = params.copy()
 
-        # ✅ ALWAYS send API key as query param
-        if API_KEY:
-            query["api-key"] =API_KEY
+    query["api-key"] = API_KEY
+    query["format"] = "json"
 
-        query.setdefault("format", "json")
-        query.setdefault("limit", API_DEFAULT_LIMIT)
+    if "limit" not in query:
+        query["limit"] = DEFAULT_LIMIT
 
-        resp = requests.get(
-            API_BASE_URL,
-            params=query,
-            timeout=(5, 15)
-        )
+    response = requests.get(
+        API_BASE_URL,
+        params=query,
+        timeout=30
+    )
 
-        if resp.status_code != 200:
-            return {
-                "error": "API request failed",
-                "status_code": resp.status_code,
-                "response": resp.text[:300]
-            }
+    response.raise_for_status()
 
-        try:
-            return resp.json()
-        except Exception:
-            return {
-                "error": "Invalid JSON response",
-                "response": resp.text[:300]
-            }
+    return response.json()
 
-    except requests.exceptions.Timeout:
-        return {"error": "API timeout"}
 
-    except Exception as e:
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }
+# =========================
+# HOME
+# =========================
 
-# ─────────────────────────────────────────────
-# ROOT
-# ─────────────────────────────────────────────
 @app.route("/")
 def home():
     return jsonify({
         "status": "running",
         "message": "🌾 Farmer Market API is live",
-        "endpoints": ["/prices", "/options", "/schema", "/health"]
+        "endpoints": [
+            "/health",
+            "/schema",
+            "/options",
+            "/prices"
+        ]
     })
 
-# ─────────────────────────────────────────────
+
+# =========================
 # HEALTH
-# ─────────────────────────────────────────────
+# =========================
+
 @app.route("/health")
 def health():
     return jsonify({
@@ -103,129 +86,138 @@ def health():
         "resource_id": RESOURCE_ID
     })
 
-# ─────────────────────────────────────────────
+
+# =========================
 # SCHEMA
-# ─────────────────────────────────────────────
+# =========================
+
 @app.route("/schema")
 def schema():
-    data = fetch_from_api({"limit": 1})
-
-    if isinstance(data, dict) and data.get("error"):
-        return jsonify(data), 500
-
-    records = data.get("records", [])
-
-    if not records:
-        return jsonify({"error": "No data found"}), 404
-
-    return jsonify({
-        "fields": list(records[0].keys()),
-        "example": records[0]
-    })
-
-# ─────────────────────────────────────────────
-# OPTIONS
-# ─────────────────────────────────────────────
-@app.route("/options")
-def options():
-    data = fetch_from_api({"limit": 100})
-
-    if isinstance(data, dict) and data.get("error"):
-        return jsonify(data), 500
-
-    records = data.get("records", [])
-
-    districts, markets, commodities = set(), set(), set()
-
-    for r in records:
-        if not isinstance(r, dict):
-            continue
-
-        if r.get("District"):
-            districts.add(r["District"])
-        if r.get("Market"):
-            markets.add(r["Market"])
-        if r.get("Commodity"):
-            commodities.add(r["Commodity"])
-
-    return jsonify({
-        "districts": sorted(d for d in districts if d),
-        "markets": sorted(m for m in markets if m),
-        "commodities": sorted(c for c in commodities if c),
-    })
-@app.route("/debug-api")
-def debug_api():
     try:
-        headers = {
-            "Authorization": API_KEY
-        }
-
-        response = requests.get(
-            API_BASE_URL,
-            params={
-                "format": "json",
-                "limit": 1
-            },
-            headers=headers,
-            timeout=20
-        )
+        data = fetch_from_api({
+            "limit": 1
+        })
 
         return jsonify({
-            "status_code": response.status_code,
-            "text": response.text[:1000]
+            "fields": data.get("field", []),
+            "count": data.get("count"),
+            "sample_record": (
+                data.get("records", [{}])[0]
+                if data.get("records")
+                else {}
+            )
         })
 
     except Exception as e:
-        import traceback
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+# =========================
+# OPTIONS
+# =========================
+
+@app.route("/options")
+def options():
+    try:
+        data = fetch_from_api({
+            "limit": 1000
+        })
+
+        records = data.get("records", [])
+
+        states = sorted({
+            r.get("state")
+            for r in records
+            if r.get("state")
+        })
+
+        districts = sorted({
+            r.get("district")
+            for r in records
+            if r.get("district")
+        })
+
+        markets = sorted({
+            r.get("market")
+            for r in records
+            if r.get("market")
+        })
+
+        commodities = sorted({
+            r.get("commodity")
+            for r in records
+            if r.get("commodity")
+        })
 
         return jsonify({
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "states": states,
+            "districts": districts,
+            "markets": markets,
+            "commodities": commodities
+        })
+
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
         }), 500
-# ─────────────────────────────────────────────
+
+
+# =========================
 # PRICES
-# ─────────────────────────────────────────────
+# =========================
+
 @app.route("/prices")
 def prices():
     try:
-        params = {}
+        params = {
+            "limit": request.args.get("limit", 100)
+        }
 
-        if request.args.get("state"):
-            params["filters[State]"] = request.args.get("state")
+        state = request.args.get("state")
+        district = request.args.get("district")
+        market = request.args.get("market")
+        commodity = request.args.get("commodity")
+        variety = request.args.get("variety")
+        grade = request.args.get("grade")
 
-        if request.args.get("commodity"):
-            params["filters[Commodity]"] = request.args.get("commodity")
+        if state:
+            params["filters[state.keyword]"] = state
 
-        if request.args.get("district"):
-            params["filters[District]"] = request.args.get("district")
+        if district:
+            params["filters[district]"] = district
 
-        if request.args.get("market"):
-            params["filters[Market]"] = request.args.get("market")
+        if market:
+            params["filters[market]"] = market
+
+        if commodity:
+            params["filters[commodity]"] = commodity
+
+        if variety:
+            params["filters[variety]"] = variety
+
+        if grade:
+            params["filters[grade]"] = grade
 
         data = fetch_from_api(params)
-
-        if isinstance(data, dict) and data.get("error"):
-            return jsonify(data), 500
 
         records = data.get("records", [])
 
         result = []
 
         for r in records:
-            if not isinstance(r, dict):
-                continue
-
             result.append({
-                "state": r.get("State"),
-                "district": r.get("District"),
-                "market": r.get("Market"),
-                "commodity": r.get("Commodity"),
-                "variety": r.get("Variety"),
-                "grade": r.get("Grade"),
-                "arrival_date": r.get("Arrival Date"),
-                "min_price": r.get("Min X0020 Price"),
-                "max_price": r.get("Max X0020 Price"),
-                "modal_price": r.get("Modal X0020 Price"),
+                "state": r.get("state"),
+                "district": r.get("district"),
+                "market": r.get("market"),
+                "commodity": r.get("commodity"),
+                "variety": r.get("variety"),
+                "grade": r.get("grade"),
+                "arrival_date": r.get("arrival_date"),
+                "min_price": r.get("min_price"),
+                "max_price": r.get("max_price"),
+                "modal_price": r.get("modal_price")
             })
 
         return jsonify({
@@ -233,15 +225,19 @@ def prices():
             "records": result
         })
 
-    except Exception:
+    except Exception as e:
         return jsonify({
-            "error": "prices route crashed",
-            "trace": traceback.format_exc()
+            "error": str(e)
         }), 500
 
-# ─────────────────────────────────────────────
+
+# =========================
 # RUN
-# ─────────────────────────────────────────────
+# =========================
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=True
+    )
