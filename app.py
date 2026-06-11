@@ -153,7 +153,28 @@ def options():
         "markets": sorted(m for m in markets if m),
         "commodities": sorted(c for c in commodities if c),
     })
+@app.route("/debug-api")
+def debug_api():
+    headers = {}
 
+    if API_KEY:
+        headers["Authorization"] = API_KEY
+
+    try:
+        r = requests.get(
+            API_BASE_URL,
+            params={"format": "json", "limit": 1},
+            headers=headers,
+            timeout=20
+        )
+
+        return jsonify({
+            "status_code": r.status_code,
+            "response": r.text[:1000]
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # ─────────────────────────────────────────────
 # PRICES
 # ─────────────────────────────────────────────
